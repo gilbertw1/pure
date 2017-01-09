@@ -280,6 +280,7 @@ prompt_pure_async_tasks() {
 
 	# store working_tree without the "x" prefix
 	local working_tree="${vcs_info_msg_1_#x}"
+  local newdir=false
 
 	# check if the working tree changed (prompt_pure_current_working_tree is prefixed by "x")
 	if [[ ${prompt_pure_current_working_tree#x} != $working_tree ]]; then
@@ -288,7 +289,8 @@ prompt_pure_async_tasks() {
 
 		# reset git preprompt variables, switching working tree
 		unset prompt_pure_git_dirty
-		unset prompt_pure_git_last_dirty_check_timestamp
+    prompt_pure_git_last_dirty_check_timestamp=$EPOCHSECONDS
+    newdir=true
 
 		# set the new working tree and prefix with "x" to prevent the creation of a named path by AUTO_NAME_DIRS
 		prompt_pure_current_working_tree="x${working_tree}"
@@ -305,8 +307,7 @@ prompt_pure_async_tasks() {
 
 	# if dirty checking is sufficiently fast, tell worker to check it again, or wait for timeout
 	integer time_since_last_dirty_check=$(( EPOCHSECONDS - ${prompt_pure_git_last_dirty_check_timestamp:-0} ))
-	if (( time_since_last_dirty_check > ${PURE_GIT_DELAY_DIRTY_CHECK:-1800} )); then
-		unset prompt_pure_git_last_dirty_check_timestamp
+	if [[ "$newdir" = true || $time_since_last_dirty_check > ${PURE_GIT_DELAY_DIRTY_CHECK:-1800} ]]; then
 		# check check if there is anything to pull
 		async_job "prompt_pure" prompt_pure_async_git_dirty "${PURE_GIT_UNTRACKED_DIRTY:-1}" "${working_tree}"
 	fi
@@ -325,7 +326,7 @@ prompt_pure_async_callback() {
 			# When prompt_pure_git_last_dirty_check_timestamp is set, the git info is displayed in a different color.
 			# To distinguish between a "fresh" and a "cached" result, the preprompt is rendered before setting this
 			# variable. Thus, only upon next rendering of the preprompt will the result appear in a different color.
-			(( $exec_time > 2 )) && prompt_pure_git_last_dirty_check_timestamp=$EPOCHSECONDS
+			(( $exec_time < 2 )) && unset prompt_pure_git_last_dirty_check_timestamp
 			;;
 		prompt_pure_async_git_fetch)
 			prompt_pure_check_git_arrows
