@@ -122,93 +122,104 @@ prompt_pure_string_length_to_var() {
 	typeset -g "${var}"="${length}"
 }
 
+
+prompt_pure_short_pwd() {
+
+    local short full part cur
+    local first
+    local -a split    # the array we loop over
+
+    split=(${(s:/:)${(Q)${(D)1:-$PWD}}})
+
+    if [[ $split == "" ]]; then
+        print "/"
+        return 0
+    fi
+
+    if [[ $split[1] = \~* ]]; then
+        first=$split[1]
+        full=$~split[1]
+        shift split
+    fi
+
+    if (( $#split > 0 )); then
+        part=/
+    fi
+
+    for cur ($split[1,-2]) {
+            while {
+                part+=$cur[1]
+                cur=$cur[2,-1]
+                local -a glob
+                glob=( $full/$part*(-/N) )
+                # continue adding if more than one directory matches or
+                # the current string is . or ..
+                # but stop if there are no more characters to add
+                (( $#glob > 1 )) || [[ $part == (.|..) ]] && (( $#cur > 0 ))
+            } { # this is a do-while loop
+            }
+                  full+=$part$cur
+                  short+=$part
+                  part=/
+        }
+        print "$first$short$part$split[-1]"
+        return 0
+}
+
 prompt_pure_preprompt_render() {
-	# store the current prompt_subst setting so that it can be restored later
-	local prompt_subst_status=$options[prompt_subst]
-
-	# make sure prompt_subst is unset to prevent parameter expansion in preprompt
-	setopt local_options no_prompt_subst
-
-	# check that no command is currently running, the preprompt will otherwise be rendered in the wrong place
-	[[ -n ${prompt_pure_cmd_timestamp+x} && "$1" != "precmd" ]] && return
-
 	# set color for git branch/dirty status, change color if dirty checking has been delayed
 	local git_color=242
 	[[ -n ${prompt_pure_git_last_dirty_check_timestamp+x} ]] && git_color=red
 
-	# construct preprompt, beginning with path
-	local preprompt="%F{blue}%~%f"
+
+  local jobs
+  local prompt_mean_jobs
+  unset jobs
+  for a (${(k)jobstates}) {
+          j=$jobstates[$a];i="${${(@s,:,)j}[2]}"
+          jobs+=($a${i//[^+-]/})
+      }
+
+  case ${KEYMAP} in
+      (vicmd)      VI_MODE="%F{blue}-- NORMAL --" ;;
+      (main|viins) VI_MODE="%F{2}-- INSERT --" ;;
+      (*)          VI_MODE="%F{2}-- INSERT --" ;;
+  esac
+
+  prompt_pure_jobs=""
+  [[ -n $jobs ]] && prompt_pure_jobs="%F{242}["${(j:,:)jobs}"] "
+
+  # construct pre prompt starting with jobs
+  local preprompt="$prompt_pure_jobs"
+  # tmux status
+  preprompt+="%F{yellow}$prompt_pure_tmux"
+  # exec time
+  preprompt+="%F{magenta}${prompt_pure_cmd_exec_time}%f"
+  # pwd
+  preprompt+=" %F{blue}`prompt_pure_short_pwd` "
+  # prompt symbol
+  preprompt+="%B%F{1}❯%(?.%F{3}.%B%F{red})❯%(?.%F{2}.%B%F{red})❯%f%b "
+	# prompt turns red if the previous command didn't exit with 0
+	PROMPT=$preprompt
+
+
+	# vi mode
+	local postprompt="$VI_MODE"
 	# git info
-	preprompt+="%F{$git_color}${vcs_info_msg_0_}${prompt_pure_git_dirty}%f"
+	postprompt+="%F{cyan}${vcs_info_msg_0_}${prompt_pure_git_dirty}%f"
 	# git pull/push arrows
-	preprompt+="%F{cyan}${prompt_pure_git_arrows}%f"
-	# username and machine if applicable
-	preprompt+=$prompt_pure_username
-	# execution time
-	preprompt+="%F{yellow}${prompt_pure_cmd_exec_time}%f"
+	postprompt+="%F{magenta}${prompt_pure_git_arrows}%f"
+  # lambda host
+  postprompt+=" %F{yellow}λ $prompt_pure_host"
 
-	# make sure prompt_pure_last_preprompt is a global array
-	typeset -g -a prompt_pure_last_preprompt
+  # render rprompt
+  RPROMPT=$postprompt
 
-	# if executing through precmd, do not perform fancy terminal editing
-	if [[ "$1" == "precmd" ]]; then
-		print -P "\n${preprompt}"
-	else
-		# only redraw if the expanded preprompt has changed
-		[[ "${prompt_pure_last_preprompt[2]}" != "${(S%%)preprompt}" ]] || return
-
-		# calculate length of preprompt and store it locally in preprompt_length
-		integer preprompt_length lines
-		prompt_pure_string_length_to_var "${preprompt}" "preprompt_length"
-
-		# calculate number of preprompt lines for redraw purposes
-		(( lines = ( preprompt_length - 1 ) / COLUMNS + 1 ))
-
-		# calculate previous preprompt lines to figure out how the new preprompt should behave
-		integer last_preprompt_length last_lines
-		prompt_pure_string_length_to_var "${prompt_pure_last_preprompt[1]}" "last_preprompt_length"
-		(( last_lines = ( last_preprompt_length - 1 ) / COLUMNS + 1 ))
-
-		# clr_prev_preprompt erases visual artifacts from previous preprompt
-		local clr_prev_preprompt
-		if (( last_lines > lines )); then
-			# move cursor up by last_lines, clear the line and move it down by one line
-			clr_prev_preprompt="\e[${last_lines}A\e[2K\e[1B"
-			while (( last_lines - lines > 1 )); do
-				# clear the line and move cursor down by one
-				clr_prev_preprompt+='\e[2K\e[1B'
-				(( last_lines-- ))
-			done
-
-			# move cursor into correct position for preprompt update
-			clr_prev_preprompt+="\e[${lines}B"
-		# create more space for preprompt if new preprompt has more lines than last
-		elif (( last_lines < lines )); then
-			# move cursor using newlines because ansi cursor movement can't push the cursor beyond the last line
-			printf $'\n'%.0s {1..$(( lines - last_lines ))}
-		fi
-
-		# disable clearing of line if last char of preprompt is last column of terminal
-		local clr='\e[K'
-		(( COLUMNS * lines == preprompt_length )) && clr=
-
-		# modify previous preprompt
-		print -Pn "${clr_prev_preprompt}\e[${lines}A\e[${COLUMNS}D${preprompt}${clr}\n"
-
-		if [[ $prompt_subst_status = 'on' ]]; then
-			# re-eanble prompt_subst for expansion on PS1
-			setopt prompt_subst
-		fi
-
-		# redraw prompt (also resets cursor position)
-		zle && zle .reset-prompt
-	fi
-
-	# store both unexpanded and expanded preprompt for comparison
-	prompt_pure_last_preprompt=("$preprompt" "${(S%%)preprompt}")
+  zle && zle .reset-prompt
 }
 
 prompt_pure_precmd() {
+
 	# check exec time and store it in a variable
 	prompt_pure_check_cmd_exec_time
 
@@ -357,14 +368,17 @@ prompt_pure_setup() {
 		zle -N clear-screen prompt_pure_clear_screen
 	fi
 
-	# show username@host if logged in through SSH
-	[[ "$SSH_CONNECTION" != '' ]] && prompt_pure_username=' %F{242}%n@%m%f'
+  prompt_pure_host="%F{cyan}%m%f"
 
-	# show username@host if root, with username in white
-	[[ $UID -eq 0 ]] && prompt_pure_username=' %F{white}%n%f%F{242}@%m%f'
-
-	# prompt turns red if the previous command didn't exit with 0
-	PROMPT="%(?.%F{magenta}.%F{red})${PURE_PROMPT_SYMBOL:-❯}%f "
+  [[ "$TMUX" != '' ]] && prompt_pure_tmux="t"
 }
+
+function zle-line-init zle-keymap-select {
+		prompt_pure_preprompt_render
+    zle reset-prompt
+}
+
+zle -N zle-line-init
+zle -N zle-keymap-select
 
 prompt_pure_setup "$@"
